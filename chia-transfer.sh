@@ -2,12 +2,8 @@
 
 CONF_FILE="/home/$USER/.config/chia-transfer/config";
 FILE_TYPE="";
-K32=108644374730;
-
-if [ -d "/home/$USER/.cache/chia-transfer" ]; then
-    # Cleanup cache dir on fresh start
-    rm -rf "/home/$USER/.cache/chia-transfer/*";
-fi
+# TODO define the actual K32 size 108644374730 (arch iso is 792014848, image will be 20000)
+K32=792014848;
 
 # Set file type that should be moved
 if [ -z "$1" ]; then FILE_TYPE=".plot"; else FILE_TYPE=".$1"; fi
@@ -48,6 +44,15 @@ if [ -z "$TARGET" ]; then
     exit 1;
 fi
 
+for targetDrive in "${TARGET[@]}";
+do
+    if [ ! -d "$targetDrive" ]; then
+        echo "The target drive you provided [$targetDrive] doesn't exist!";
+        echo "Exiting...";
+        exit 1;
+    fi
+done
+
 # Parse files on source dir to an array, excluding files that contain '.tmp' in their file names
 FILES=($(ls $SRC | grep ".tmp" -v | grep $FILE_TYPE))
 
@@ -60,14 +65,14 @@ fi
 # Log the moveable files
 echo "There are moveable files: $tmp";
 
-# Create pending dir if it doesn't exist
-if [ ! -d "/home/$USER/.cache/chia-transfer" ]; then
-    mkdir "/home/$USER/.cache/chia-transfer";
-fi
+# Create pending dirs if they don't exist
+if [ ! -d "/home/$USER/.cache/chia-transfer" ]; then mkdir "/home/$USER/.cache/chia-transfer"; fi
+if [ ! -d "/home/$USER/.cache/chia-transfer/files" ]; then mkdir "/home/$USER/.cache/chia-transfer/files"; fi
+if [ ! -d "/home/$USER/.cache/chia-transfer/drives" ]; then mkdir "/home/$USER/.cache/chia-transfer/drives"; fi
 
-checkPending() {
+checkPendingFiles() {
     # Get pending moveable files if there are any (files that are already being transferred)
-    PENDING=($(ls /home/$USER/.cache/chia-transfer/));
+    PENDING=($(ls /home/$USER/.cache/chia-transfer/files/));
 
     ISMOVING=false
     for pendingfile in "${PENDING[@]}"; do
@@ -79,33 +84,71 @@ checkPending() {
     done
 }
 
+checkPendingDrives() {
+    # Get pending drives that being moved to
+    USEDDRIVES=($(ls /home/$USER/.cache/chia-transfer/drives/));
+
+    ISDRIVEUSED=false
+    for pendingDrive in "${USEDDRIVES[@]}"; do
+        if [ "${pendingDrive//\//"_"}" == "$1" ]; then
+            ISDRIVEUSED=true
+            break;
+        fi
+    done
+}
+
+getDriveFreeSize() {
+    freekb=$(df -P $1 | awk 'NR==2' | awk '{print $4}')
+    DRIVEFREESIZE=$((freekb * 1024));
+    echo -e  "Free space of $drive is $DRIVEFREESIZE bytes [$((DRIVEFREESIZE / 1024 / 1024 /1024)) GB]";
+}
+
 for file in "${FILES[@]}";
 do
-    FILESIZE=$(ls -l "$SRC$file" | cut -d " " -f 5)
+    FILESIZE=$(ls -l "${SRC}${file}" | cut -d " " -f 5)
     # echo "The $file is $FILESIZE bytes large.";
 
-    # TODO replace 2000 with the $K32 variable! arch iso is 792014848 bytes
-    if [ ! $FILESIZE -gt 20000 ]; then
+    if [ ! $FILESIZE -gt $K32 ] && [ ! $FILESIZE -eq $K32 ]; then
         echo "The $file is smaller than $K32 bytes, skipping...";
         continue;
     fi
 
-    checkPending $file
+    checkPendingFiles $file
 
     if [ $ISMOVING == true ]; then
         echo "$file is being moved, skipping...";
         continue;
     fi
 
-    # create pending status for file
-    touch "/home/$USER/.cache/chia-transfer/$file";
-    echo "Created pending status for file $file";
+    TARGET_DRIVE=""
+    TARGET_DRIVE_SLUG=""
 
-    sleep 3;
+    for drive in "${TARGET[@]}"; do
+        cleandrivename="${drive//\//"_"}"
+        checkPendingDrives $cleandrivename
+        getDriveFreeSize $drive
+        if [ $DRIVEFREESIZE -gt $K32 ] && [ $ISDRIVEUSED == false ]; then
+            TARGET_DRIVE="$drive";
+            TARGET_DRIVE_SLUG="$cleandrivename";
+        fi
+    done
+    
 
-    # cleanup after move
-    rm "/home/$USER/.cache/chia-transfer/$file";
-    echo "Removed pending status for file $file";
+    # Create pending status for drive
+    touch "/home/$USER/.cache/chia-transfer/drives/${TARGET_DRIVE_SLUG}";
+    echo "Created pending status for drive ${TARGET_DRIVE}";    
+    
+    # Create pending status for file
+    touch "/home/$USER/.cache/chia-transfer/files/${file}";
+    echo "Created pending status for file ${file}";
+
+    mv "${SRC}${file}" "${TARGET_DRIVE}";
+
+    # Cleanup after move
+    rm "/home/$USER/.cache/chia-transfer/files/${file}";
+    echo "Removed pending status for file ${file}";
+    rm "/home/$USER/.cache/chia-transfer/drives/${TARGET_DRIVE_SLUG}";
+    echo "Removed pending status for drive ${TARGET_DRIVE}";
 done
 
 exit 0;
